@@ -116,8 +116,9 @@ def get_suppliers():
 @app.route('/api/purchase_order', methods=['POST'])
 def create_purchase_order():
     data = request.json
-    supplier_name = data['supplier_name']
-    supplier_email = data['supplier_email']
+    #supplier_name = data['supplier_name']
+    #supplier_email = data['supplier_email']
+    supplier_id = data['supplier_id']
     items = data['items']
     expected_delivery_date = data.get('expected_delivery_date')
     if expected_delivery_date:
@@ -125,12 +126,10 @@ def create_purchase_order():
     else:
         expected_delivery_date = None
 
-    # Get or create supplier
-    supplier = Supplier.query.filter_by(email=supplier_email).first()
+    # Get the supplier
+    supplier = Supplier.query.get(supplier_id)
     if not supplier:
-        supplier = Supplier(name=supplier_name, email=supplier_email)
-        db.session.add(supplier)
-        db.session.commit()
+        return jsonify({'error': 'Supplier not found'}), 404
 
     # Create purchase order
     purchase_order = PurchaseOrder(
@@ -164,6 +163,35 @@ def create_purchase_order():
     send_email_with_pdf(purchase_order, pdf_buffer)
 
     return jsonify({'status': 'success', 'order_id': purchase_order.id}), 201
+
+@app.route('/api/suppliers', methods=['POST'])
+def create_supplier():
+    data = request.json
+    name = data.get('name')
+    email = data.get('email')
+    address = data.get('address')
+    phone = data.get('phone')
+    # Add any additional fields
+
+    if not name or not email:
+        return jsonify({'error': 'Name and email are required'}), 400
+
+    # Check if supplier with same email already exists
+    existing_supplier = Supplier.query.filter_by(email=email).first()
+    if existing_supplier:
+        return jsonify({'error': 'Supplier with this email already exists'}), 400
+
+    supplier = Supplier(
+        name=name,
+        email=email,
+        address=address,
+        phone=phone
+        # Add any additional fields
+    )
+    db.session.add(supplier)
+    db.session.commit()
+
+    return jsonify({'message': 'Supplier created successfully'}), 201
 
 @app.route('/api/receive_order/<int:order_id>', methods=['POST'])
 def receive_order(order_id):
