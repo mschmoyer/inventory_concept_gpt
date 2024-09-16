@@ -24,11 +24,11 @@ migrate = Migrate(app, db)
 # Configure Flask-Mail (Replace with your SMTP server details)
 app.config['MAIL_SERVER'] = 'smtp.gmail.com'  # Replace with your SMTP server
 app.config['MAIL_PORT'] = 587  # Replace with your SMTP port
-app.config['MAIL_USERNAME'] = 'mikeschmoyer@gmail.com'  # Replace with your email
-app.config['MAIL_PASSWORD'] = 'nbto bdzs ubmj umht'  # Replace with your email password
+app.config['MAIL_USERNAME'] = ''  # Replace with your email
+app.config['MAIL_PASSWORD'] = ''  # Replace with your email password
 app.config['MAIL_USE_TLS'] = True
 app.config['MAIL_USE_SSL'] = False
-app.config['MAIL_DEFAULT_SENDER'] = 'mikeschmoyer@gmail.com'  # Replace with your email
+app.config['MAIL_DEFAULT_SENDER'] = ''  # Replace with your email
 
 mail = Mail(app)
 
