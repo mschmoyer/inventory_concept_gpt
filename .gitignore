@@ -1,1 +1,4 @@
 venv
+/migrations
+instance/inventory.db
+/__pycache__

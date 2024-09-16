@@ -12,7 +12,7 @@ import os
 from datetime import datetime
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/api/*": {"origins": "*"}}, methods=['GET', 'POST', 'PUT', 'DELETE'])
 
 # Database configuration
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///inventory.db'  # SQLite database
@@ -28,6 +28,7 @@ app.config['MAIL_USERNAME'] = 'mikeschmoyer@gmail.com'  # Replace with your emai
 app.config['MAIL_PASSWORD'] = 'nbto bdzs ubmj umht'  # Replace with your email password
 app.config['MAIL_USE_TLS'] = True
 app.config['MAIL_USE_SSL'] = False
+app.config['MAIL_DEFAULT_SENDER'] = 'mikeschmoyer@gmail.com'  # Replace with your email
 
 mail = Mail(app)
 
@@ -37,14 +38,23 @@ class Product(db.Model):
     sku = db.Column(db.String(50), unique=True, nullable=False)
     name = db.Column(db.String(100), nullable=False)
     quantity = db.Column(db.Integer, default=0)
+    reorder_point = db.Column(db.Integer, default=10)
+    reorder_quantity = db.Column(db.Integer, default=50)
 
 class PurchaseOrder(db.Model):
+    __tablename__ = 'purchase_order'
     id = db.Column(db.Integer, primary_key=True)
     supplier_id = db.Column(db.Integer, db.ForeignKey('supplier.id'), nullable=False)
     status = db.Column(db.String(50), default='Pending')
+    approval_status = db.Column(db.String(50), default='Pending Approval')
     order_date = db.Column(db.DateTime, default=datetime.utcnow)
     expected_delivery_date = db.Column(db.DateTime, nullable=True)
-    items = db.relationship('PurchaseOrderItem', backref='purchase_order', lazy=True)
+    items = db.relationship(
+        'PurchaseOrderItem',
+        backref='purchase_order',
+        lazy=True,
+        cascade='all, delete-orphan'  # This ensures associated items are deleted
+    )
 
 class PurchaseOrderItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -83,9 +93,9 @@ def get_purchase_orders():
     orders = PurchaseOrder.query.all()
     purchase_orders = []
     for order in orders:
-        supplier = Supplier.query.get(order.supplier_id)
+        supplier = db.session.get(Supplier, order.supplier_id)
         items = [{
-            'sku': Product.query.get(item.product_id).sku,
+            'sku': db.session.get(Product, item.product_id).sku,
             'quantity': item.quantity
         } for item in order.items]
         purchase_orders.append({
@@ -127,7 +137,7 @@ def create_purchase_order():
         expected_delivery_date = None
 
     # Get the supplier
-    supplier = Supplier.query.get(supplier_id)
+    supplier = db.session.get(Supplier, supplier_id)
     if not supplier:
         return jsonify({'error': 'Supplier not found'}), 404
 
@@ -155,12 +165,6 @@ def create_purchase_order():
         )
         db.session.add(po_item)
     db.session.commit()
-
-    # Generate PDF
-    pdf_buffer = generate_pdf(purchase_order)
-
-    # Send Email with PDF
-    send_email_with_pdf(purchase_order, pdf_buffer)
 
     return jsonify({'status': 'success', 'order_id': purchase_order.id}), 201
 
@@ -193,12 +197,36 @@ def create_supplier():
 
     return jsonify({'message': 'Supplier created successfully'}), 201
 
+
+@app.route('/api/purchase_orders/<int:order_id>/approve', methods=['POST'])
+def approve_purchase_order(order_id):
+    purchase_order = db.session.get(PurchaseOrder, order_id)
+    if not purchase_order:
+        print(f"Purchase order not found: {order_id}")  # Debug line
+        return jsonify({'error': 'Purchase order not found'}), 404
+    if purchase_order.status == 'Approved':
+        print(f"Purchase order already approved: {order_id}")  # Debug line
+        return jsonify({'message': 'Purchase order already approved'}), 200
+    purchase_order.status = 'Approved'
+    print(f"Approval status before commit: {purchase_order.status}")  # Debug line
+    db.session.commit()
+
+    purchaser_email = 'mikeschmoyer@gmail.com'  # Replace with actual email
+    send_notification_email(
+        subject=f'Purchase Order #{order_id} Approved',
+        recipient=purchaser_email,
+        body=f'Purchase Order #{order_id} has been approved.'
+    )
+
+    return jsonify({'message': 'Purchase order approved'}), 200
+
+
 @app.route('/api/receive_order/<int:order_id>', methods=['POST'])
 def receive_order(order_id):
-    order = PurchaseOrder.query.get(order_id)
+    order = db.session.get(PurchaseOrder, order_id)
     if order and order.status == 'Pending':
         for item in order.items:
-            product = Product.query.get(item.product_id)
+            product = db.session.get(Product, item.product_id)
             product.quantity += item.quantity
         order.status = 'Received'
         db.session.commit()
@@ -216,7 +244,7 @@ def generate_pdf(purchase_order):
     company_address = "123 Main Street\nCity, State, ZIP\nPhone: (555) 123-4567\nEmail: info@yourcompany.com"
 
     # Supplier Information
-    supplier = Supplier.query.get(purchase_order.supplier_id)
+    supplier = db.session.get(Supplier, purchase_order.supplier_id)
     supplier_info = f"{supplier.name}\n{supplier.email}"
 
     # Draw Company Information
@@ -258,7 +286,7 @@ def generate_pdf(purchase_order):
     y -= 20
     p.setFont("Helvetica", 12)
     for item in purchase_order.items:
-        product = Product.query.get(item.product_id)
+        product = db.session.get(Product, item.product_id)
         p.drawString(50, y, product.sku)
         p.drawString(150, y, product.name)
         p.drawString(400, y, str(item.quantity))
@@ -274,7 +302,7 @@ def generate_pdf(purchase_order):
 
 def send_email_with_pdf(purchase_order, pdf_buffer):
     try:
-        supplier = Supplier.query.get(purchase_order.supplier_id)
+        supplier = db.session.get(Supplier, purchase_order.supplier_id)
         msg = Message(
             subject=f"Purchase Order #{purchase_order.id}",
             sender=app.config['MAIL_USERNAME'],
@@ -290,6 +318,79 @@ def send_email_with_pdf(purchase_order, pdf_buffer):
         mail.send(msg)
     except Exception as e:
         print(f"Failed to send email: {e}")
+
+def check_inventory_levels():
+    products = Product.query.all()
+    for product in products:
+        if product.quantity <= product.reorder_point:
+            # Create a purchase order for this product
+            supplier = get_default_supplier_for_product(product)  # Implement this function
+            purchase_order = PurchaseOrder(
+                supplier_id=supplier.id
+            )
+            db.session.add(purchase_order)
+            db.session.commit()
+
+            po_item = PurchaseOrderItem(
+                purchase_order_id=purchase_order.id,
+                product_id=product.id,
+                quantity=product.reorder_quantity
+            )
+            db.session.add(po_item)
+            db.session.commit()
+
+@app.route('/api/purchase_orders/<int:order_id>/update_status', methods=['POST'])
+def update_purchase_order_status(order_id):
+    data = request.json
+    new_status = data.get('status')
+    purchase_order = db.session.get(PurchaseOrder, order_id)
+    if not purchase_order:
+        return jsonify({'error': 'Purchase order not found'}), 404
+
+    valid_transitions = {
+        'Draft': ['Pending Approval', 'Cancelled'],
+        'Pending Approval': ['Approved', 'Cancelled'],
+        'Approved': ['Ordered', 'Cancelled'],
+        'Ordered': ['Shipped', 'Cancelled'],
+        'Shipped': ['Received', 'Cancelled'],
+        'Received': ['Completed'],
+        'Completed': [],
+        'Cancelled': []
+    }
+
+    if new_status not in valid_transitions.get(purchase_order.status, []):
+        return jsonify({'error': f'Invalid status transition from {purchase_order.status} to {new_status}'}), 400
+
+    purchase_order.status = new_status
+    db.session.commit()
+
+    # if status moved to Ordered, then generate PDF and send email
+    if new_status == 'Ordered':
+        # Generate PDF
+        pdf_buffer = generate_pdf(purchase_order)
+
+        # Send Email with PDF
+        send_email_with_pdf(purchase_order, pdf_buffer)
+
+    return jsonify({'message': f'Purchase order status updated to {new_status}'}), 200
+
+def send_notification_email(subject, recipient, body):
+    msg = Message(subject=subject, recipients=[recipient], body=body)
+    mail.send(msg)
+
+@app.route('/api/purchase_orders/<int:order_id>', methods=['DELETE'])
+def delete_purchase_order(order_id):
+    purchase_order = db.session.get(PurchaseOrder, order_id)
+    if not purchase_order:
+        return jsonify({'error': 'Purchase order not found'}), 404
+
+    try:
+        db.session.delete(purchase_order)
+        db.session.commit()
+        return jsonify({'message': 'Purchase order deleted successfully'}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'An error occurred: {str(e)}'}), 500
 
 if __name__ == '__main__':
     app.run(debug=True)
